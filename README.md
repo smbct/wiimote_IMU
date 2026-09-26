@@ -6,14 +6,15 @@ On older wiimotes, the wii motion plus extension is required to obtain gyroscope
 
 Note that the wiimote does not contain a magnetometer so some drift along the "yaw" rotation will appear along the runtime.
 A reset can be performed by pressing the B button.
-👆 Wiiuse also seem to not provide gyroscope data in an event based manner. Accuracy may be then sub-optimal as the user cannot precisely guess the elaped time between two different gyroscope measure.  
+
+⚠️ Wiiuse also seem to not provide gyroscope data in an event based manner. Accuracy may be then sub-optimal as the user cannot precisely guess the elaped time between two different gyroscope measure.  
 
 
-⚠️ Small parts of this code were generated using the public version of chatGPT and Gemini (09/2026).
+🚨 Small parts of this code were generated using the public version of chatGPT and Gemini (09/2026).
 
-<div align="center">
-![GIF from the application](/output.gif)
-</div>
+<p align="center">
+  <img src="output.gif" alt="GIF from the application" />
+</p>
 
 # Dependencies
 
