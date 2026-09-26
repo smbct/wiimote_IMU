@@ -12,6 +12,26 @@
 
 #define MAX_WIIMOTES 1
 
+/////////////////////////////////////
+// constants
+/////////////////////////////////////
+
+// threshold for gyroscopes update
+const double omega_threshold = 1e-12;
+
+// threshold on the accelerometer error to apply the correction
+const double sin_threshold = 1e-6;
+
+// strength of the accelerometers correction
+const double alpha = 0.02;
+
+// number of iteration to apply when resetting the matrix to cancel the drift (ugly hack)
+const int nbIterReset = 200;
+
+// conversion factors between degrees (wiimote, opengl) and radians (eigen)
+const double deg_to_radians = M_PI/180.;
+const double randians_to_deg = 180./M_PI;
+
 // cooredinates constants to draw a cube
 float cube_vert[8][3];
 
@@ -34,21 +54,13 @@ struct State {
 
 // update the current wiimote rotation matrix with last data from the gyroscopes
 // with code from chatgpt
-void updateFromGyroscopes(State& state) {
-
-    // elapsed time
-    // again, this should be recorded just after wii_motion_plus data packet is received (see comments in updateWiimoteStates function)
-    auto elapsed_time = std::chrono::steady_clock::now()-state.time;
-    state.time = std::chrono::steady_clock::now();
-    double elapsed_time_sec = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed_time).count()/1000.; 
-    // std::cout << "elapsed time in seconds: " << elapsed_time_sec << std::endl;
-
-    // extract processed angular speed from the gyroscopes (wiiuse already add some processing from raw values)
-    Eigen::Vector3d omega(-state.wiimotes[0]->exp.mp.angle_rate_gyro.roll, state.wiimotes[0]->exp.mp.angle_rate_gyro.pitch, state.wiimotes[0]->exp.mp.angle_rate_gyro.yaw);
-    omega *= M_PI/180.; // convert to randians per seconds
-    double angleOmega = omega.norm()*elapsed_time_sec;
-    if (angleOmega > 1e-12) {
-        Eigen::Vector3d axis = omega.normalized();
+// param: gyro_vec is the vector of angular speed from the gyroscopes, in radians per seconds
+// param: elapsed_time elapsed time in seconds
+// constant: omega_threshold, delat angle to allow the update (filter noise)
+void updateFromGyroscopes(State& state, Eigen::Vector3d gyro_vec, double elapsed_time) {
+    double angleOmega = gyro_vec.norm()*elapsed_time;
+    if (angleOmega > omega_threshold) {
+        Eigen::Vector3d axis = gyro_vec.normalized();
         Eigen::AngleAxisd delta(angleOmega, axis);
         state.wiimote_orient = state.wiimote_orient*delta.toRotationMatrix(); // rotate the current wiimote rotation matrix
     }
@@ -56,19 +68,18 @@ void updateFromGyroscopes(State& state) {
 
 // update the rotation matrix from accelerometer data (gravity correction)
 // with code from gemini
-void updateFromAccelerometers(State& state) {
-    // extract current acceleration vector
-    Eigen::Vector3d acc(state.wiimotes[0]->gforce.y, -state.wiimotes[0]->gforce.x, -state.wiimotes[0]->gforce.z);
-    acc.normalize();
+// param: accel, normalized acceleration vector extracted from the wiimote
+// constant: alpha, correction strength
+// constant: sin_threshold, error threshold to apply the correction
+void updateFromAccelerometers(State& state, Eigen::Vector3d accel) {
     // extract the current "predicted" gravaity vector from the current wiimote rotation matrix
     Eigen::Vector3d gravity_predicted = state.wiimote_orient.row(2).transpose();
-    Eigen::Vector3d error_axis = gravity_predicted.cross(acc);
+    Eigen::Vector3d error_axis = gravity_predicted.cross(accel);
     double error_sin = error_axis.norm();
-    if (error_sin > 1e-6) {
+    if (error_sin > sin_threshold) {
         error_axis.normalize();
         double error_angle = std::asin(error_sin);
         // Apply a small correction factor (alpha ~ 0.02) to avoid jitter from linear movements
-        double alpha = 0.02;
         Eigen::AngleAxisd correction(alpha * error_angle, error_axis);
         // Update state.wiimote_orient to tilt its Z-axis back into alignment with gravity
         state.wiimote_orient = state.wiimote_orient*correction.toRotationMatrix();
@@ -79,7 +90,7 @@ void updateFromAccelerometers(State& state) {
 void updateEulerAngles(State& state) {
     // extract angle from the current matrix
     Eigen::Vector3d ea = state.wiimote_orient.eulerAngles(2, 1, 0);
-    ea *= 180./M_PI; // convert to degrees per seconds
+    ea *= randians_to_deg; // convert to degrees per seconds
     state.yaw = ea[0]; state.pitch = ea[1]; state.roll = ea[2]; 
     // std::cout << "Euler angles estimated: " << ea[0] << ", " << ea[1] << ", " << ea[2] << std::endl;
 }
@@ -202,31 +213,16 @@ void updateWiimoteStates() {
         if(wiiuse_poll(state.wiimotes, MAX_WIIMOTES)) {
             wiimote_t* wm = state.wiimotes[0];
 
-            // debug print
-            // std::cout << std::endl;
-            // std::cout << "wiimote gforce X: " << state.wiimotes[0]->gforce.x << std::endl;
-            // std::cout << "wiimote gforce Y: " << state.wiimotes[0]->gforce.y << std::endl;
-            // std::cout << "wiimote gforce Z: " << state.wiimotes[0]->gforce.z << std::endl;
-
-            // std::cout << std::endl;
-            // std::cout << "wiimote accel X: " << (double)state.wiimotes[0]->accel.x << std::endl;
-            // std::cout << "wiimote accel Y: " << (double)state.wiimotes[0]->accel.y << std::endl;
-            // std::cout << "wiimote accel Z: " << (double)state.wiimotes[0]->accel.z << std::endl;
-
-            // std::cout << std::endl;
-            // std::cout << "wm+ gyroscope roll: " << state.wiimotes[0]->exp.mp.angle_rate_gyro.roll << std::endl;
-            // std::cout << "wm+ gyroscope ptch: " << state.wiimotes[0]->exp.mp.angle_rate_gyro.pitch << std::endl;
-            // std::cout << "wm+ gyroscope yaw: " << state.wiimotes[0]->exp.mp.angle_rate_gyro.yaw << std::endl;
-
-
             if (IS_JUST_PRESSED(wm, WIIMOTE_BUTTON_B)) {
                 state.roll = 0;
                 state.pitch = 0;
                 state.yaw = 0;
                 state.wiimote_orient = Eigen::Matrix3d::Identity();
                 // ugly hack to re-orient the matrix according to current accelerometers values
-                for(int i = 0; i < 200; i ++) {
-                    updateFromAccelerometers(state);
+                Eigen::Vector3d accel(state.wiimotes[0]->gforce.y, -state.wiimotes[0]->gforce.x, -state.wiimotes[0]->gforce.z);
+                accel.normalize();
+                for(int i = 0; i < nbIterReset; i ++) {
+                    updateFromAccelerometers(state, accel);
                 }
                 updateEulerAngles(state);
             } else {
@@ -236,9 +232,21 @@ void updateWiimoteStates() {
                 ////////////////////////////////////////////////////
                 
                 // update the roatation matrix from gyroscopes data
-                updateFromGyroscopes(state);
+                // extract processed angular speed from the gyroscopes (wiiuse already add some processing from raw values)
+                Eigen::Vector3d gyro_vec(-state.wiimotes[0]->exp.mp.angle_rate_gyro.roll, state.wiimotes[0]->exp.mp.angle_rate_gyro.pitch, state.wiimotes[0]->exp.mp.angle_rate_gyro.yaw);
+                gyro_vec *= deg_to_radians; // convert to radians per seconds (wiiuse provide speeds in degree per seconds)
+                // elapsed time, again, this should be recorded just after wii_motion_plus data packet is received (see comments in updateWiimoteStates function)
+                auto elapsed_time = std::chrono::steady_clock::now()-state.time;
+                state.time = std::chrono::steady_clock::now();
+                double elapsed_time_sec = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed_time).count()/1000.; 
+                updateFromGyroscopes(state, gyro_vec, elapsed_time_sec);
+
                 // accelerometers update, gemini code
-                updateFromAccelerometers(state);
+                // extract current acceleration vector
+                Eigen::Vector3d accel(state.wiimotes[0]->gforce.y, -state.wiimotes[0]->gforce.x, -state.wiimotes[0]->gforce.z);
+                accel.normalize();
+                updateFromAccelerometers(state, accel);
+
                 // update euler angles after the rotation matrix update
                 updateEulerAngles(state);
             }
