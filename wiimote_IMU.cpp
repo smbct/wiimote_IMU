@@ -68,7 +68,7 @@ void updateFromGyroscopes(State& state, Eigen::Vector3d gyro_vec, double elapsed
 
 // update the rotation matrix from accelerometer data (gravity correction)
 // with code from gemini
-// param: accel, normalized acceleration vector extracted from the wiimote
+// param: accel, normalized acceleration vector extracted from the wiimote (accel is expressed in "g")
 // constant: alpha, correction strength
 // constant: sin_threshold, error threshold to apply the correction
 void updateFromAccelerometers(State& state, Eigen::Vector3d accel) {
